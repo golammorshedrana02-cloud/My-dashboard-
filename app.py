@@ -1,483 +1,269 @@
 import streamlit as st
-import sqlite3
-import hashlib
-import secrets
+import sqlite3, hashlib, secrets
 import pandas as pd
 from datetime import datetime
 from pathlib import Path
-from io import BytesIO
 
-st.set_page_config(page_title="EduNexus 2.0", page_icon="🎓", layout="wide")
-DB_PATH = Path("edunexus.db")
+st.set_page_config(page_title="EduNexus V3", page_icon="🎓", layout="wide")
+DB = Path("edunexus_v3.db")
 
-# ---------------- Database (compatible with V1) ----------------
 def db():
-    con = sqlite3.connect(DB_PATH, check_same_thread=False)
-    con.row_factory = sqlite3.Row
-    return con
+    c = sqlite3.connect(DB, check_same_thread=False)
+    c.row_factory = sqlite3.Row
+    return c
 
 def init_db():
-    with db() as con:
-        con.executescript("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            role TEXT NOT NULL CHECK(role IN ('Admin','Teacher','Student')),
-            created_at TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS students (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            full_name TEXT NOT NULL,
-            roll TEXT NOT NULL,
-            institution_type TEXT NOT NULL,
-            institution_name TEXT NOT NULL,
-            department TEXT DEFAULT '',
-            class_name TEXT DEFAULT '',
-            section TEXT DEFAULT '',
-            academic_year TEXT NOT NULL,
-            username TEXT UNIQUE,
-            created_at TEXT NOT NULL,
-            UNIQUE(institution_name, academic_year, roll)
-        );
-        CREATE TABLE IF NOT EXISTS results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            student_id INTEGER NOT NULL,
-            exam_name TEXT NOT NULL,
-            subject TEXT NOT NULL,
-            marks REAL NOT NULL,
-            max_marks REAL NOT NULL,
-            entered_by TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            UNIQUE(student_id, exam_name, subject),
-            FOREIGN KEY(student_id) REFERENCES students(id)
-        );
+    with db() as c:
+        c.executescript("""
+        CREATE TABLE IF NOT EXISTS users(
+          id INTEGER PRIMARY KEY, username TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL, salt TEXT NOT NULL,
+          role TEXT NOT NULL CHECK(role IN ('Admin','Teacher','Student')),
+          created_at TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS students(
+          id INTEGER PRIMARY KEY, name TEXT NOT NULL, roll TEXT NOT NULL,
+          institution TEXT NOT NULL, level TEXT NOT NULL, class_name TEXT DEFAULT '',
+          academic_year TEXT NOT NULL, username TEXT UNIQUE,
+          UNIQUE(institution, academic_year, roll));
+        CREATE TABLE IF NOT EXISTS marks(
+          id INTEGER PRIMARY KEY, student_id INTEGER NOT NULL,
+          exam TEXT NOT NULL, subject TEXT NOT NULL, obtained REAL NOT NULL,
+          total REAL NOT NULL, entered_by TEXT NOT NULL, created_at TEXT NOT NULL,
+          UNIQUE(student_id, exam, subject),
+          FOREIGN KEY(student_id) REFERENCES students(id));
         """)
 init_db()
 
-# ---------------- Authentication ----------------
-def make_password(password, salt=None):
+def hash_pw(pw, salt=None):
     salt = salt or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 180_000).hex()
-    return digest, salt
+    h = hashlib.pbkdf2_hmac("sha256", pw.encode(), salt.encode(), 200000).hex()
+    return h, salt
 
-def verify_password(password, stored_hash, salt):
-    return secrets.compare_digest(make_password(password, salt)[0], stored_hash)
+def add_user(c, username, password, role):
+    h, salt = hash_pw(password)
+    c.execute("INSERT INTO users(username,password_hash,salt,role,created_at) VALUES(?,?,?,?,?)",
+              (username.strip(), h, salt, role, datetime.now().isoformat(timespec="seconds")))
 
-def user_count():
-    with db() as con:
-        return con.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+def verify(username, password):
+    with db() as c:
+        u = c.execute("SELECT * FROM users WHERE username=?", (username.strip(),)).fetchone()
+    if not u: return None
+    h, _ = hash_pw(password, u["salt"])
+    return {"username":u["username"],"role":u["role"]} if secrets.compare_digest(h,u["password_hash"]) else None
 
-def add_user(username, password, role):
-    ph, salt = make_password(password)
-    with db() as con:
-        con.execute("INSERT INTO users(username,password_hash,salt,role,created_at) VALUES(?,?,?,?,?)",
-                    (username.strip(), ph, salt, role, datetime.now().isoformat(timespec="seconds")))
+def grade(p):
+    if p >= 80: return "A+",5.0
+    if p >= 70: return "A",4.0
+    if p >= 60: return "A-",3.5
+    if p >= 50: return "B",3.0
+    if p >= 40: return "C",2.0
+    if p >= 33: return "D",1.0
+    return "F",0.0
 
-def authenticate(username, password):
-    with db() as con:
-        row = con.execute("SELECT * FROM users WHERE username=?", (username.strip(),)).fetchone()
-    if row and verify_password(password, row["password_hash"], row["salt"]):
-        return {"username": row["username"], "role": row["role"]}
-    return None
+def analyze(df):
+    if df.empty: return None, pd.DataFrame()
+    rows=[]
+    for _,r in df.iterrows():
+        pct = 100*r.obtained/r.total if r.total else 0
+        g,gp=grade(pct)
+        rows.append({"Subject":r.subject,"Marks":r.obtained,"Out of":r.total,
+                     "Percent":round(pct,2),"Grade":g,"GP":gp,
+                     "Status":"Pass" if gp else "Fail"})
+    details=pd.DataFrame(rows)
+    maximum=float(df.total.sum()); obtained=float(df.obtained.sum())
+    return {"total":obtained,"maximum":maximum,"percent":100*obtained/maximum if maximum else 0,
+            "gpa":min(5.0,float(details.GP.mean())),
+            "status":"Fail" if (details.Status=="Fail").any() else "Pass"}, details
 
-# ---------------- Academic rules ----------------
-def grade_for_percent(percent):
-    # Generic configurable-style default. Confirm official institutional rules before real use.
-    if percent >= 80: return "A+", 5.00
-    if percent >= 70: return "A", 4.00
-    if percent >= 60: return "A-", 3.50
-    if percent >= 50: return "B", 3.00
-    if percent >= 40: return "C", 2.00
-    if percent >= 33: return "D", 1.00
-    return "F", 0.00
+def load_students():
+    with db() as c: return pd.read_sql_query("SELECT * FROM students ORDER BY name",c)
 
-def subject_rows(df):
-    rows = []
-    for r in df.itertuples():
-        pct = (float(r.marks) / float(r.max_marks) * 100) if r.max_marks else 0
-        grade, gp = grade_for_percent(pct)
-        rows.append({"Subject": r.subject, "Marks": r.marks, "Out of": r.max_marks,
-                     "Percentage": round(pct, 2), "Grade": grade, "Grade Point": gp,
-                     "Status": "Pass" if gp > 0 else "Fail"})
-    return pd.DataFrame(rows)
+def load_marks():
+    with db() as c:
+        return pd.read_sql_query("""SELECT m.*,s.name,s.roll,s.institution,s.level,s.class_name
+        FROM marks m JOIN students s ON s.id=m.student_id""",c)
 
-def summarize_exam(df):
-    if df.empty:
-        return None
-    details = subject_rows(df)
-    total = float(df["marks"].sum())
-    maximum = float(df["max_marks"].sum())
-    pct = (total / maximum * 100) if maximum else 0
-    # Average subject grade points; any failed subject makes overall status Fail.
-    gpa = round(float(details["Grade Point"].mean()), 2) if len(details) else 0
-    gpa = min(gpa, 5.0)
-    failed = int((details["Status"] == "Fail").sum())
-    status = "Fail" if failed else "Pass"
-    overall_grade, _ = grade_for_percent(pct)
-    return {"total": total, "maximum": maximum, "percent": pct, "gpa": gpa,
-            "grade": overall_grade, "status": status, "failed": failed, "details": details}
-
-def students_df():
-    with db() as con:
-        return pd.read_sql_query("SELECT * FROM students ORDER BY full_name", con)
-
-def all_results_df():
-    with db() as con:
-        return pd.read_sql_query("""
-            SELECT r.*, s.full_name, s.roll, s.institution_type, s.institution_name,
-                   s.department, s.class_name, s.section, s.academic_year, s.username
-            FROM results r JOIN students s ON s.id=r.student_id
-        """, con)
-
-def result_for(student_id, exam):
-    with db() as con:
-        return pd.read_sql_query("SELECT exam_name,subject,marks,max_marks FROM results WHERE student_id=? AND exam_name=? ORDER BY subject",
-                                 con, params=(int(student_id), exam))
-
-def get_student(username):
-    with db() as con:
-        return con.execute("SELECT * FROM students WHERE username=?", (username,)).fetchone()
-
-def make_marksheet_pdf(student, exam, summary):
-    from reportlab.lib.pagesizes import A4
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib import colors
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import mm
-    buf = BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, rightMargin=18*mm, leftMargin=18*mm, topMargin=18*mm, bottomMargin=18*mm)
-    styles = getSampleStyleSheet()
-    story = [
-        Paragraph("EduNexus — Academic Marksheet", styles["Title"]),
-        Spacer(1, 8),
-        Paragraph(f"<b>Institution:</b> {student['institution_name']}", styles["Normal"]),
-        Paragraph(f"<b>Student:</b> {student['full_name']} &nbsp;&nbsp; <b>Roll:</b> {student['roll']}", styles["Normal"]),
-        Paragraph(f"<b>Level:</b> {student['institution_type']} &nbsp;&nbsp; <b>Class/Year:</b> {student['class_name']}", styles["Normal"]),
-        Paragraph(f"<b>Academic Year:</b> {student['academic_year']} &nbsp;&nbsp; <b>Exam:</b> {exam}", styles["Normal"]),
-        Spacer(1, 12)
-    ]
-    data = [["Subject", "Marks", "Out of", "%", "Grade", "GP"]]
-    for _, r in summary["details"].iterrows():
-        data.append([str(r["Subject"]), f"{r['Marks']:g}", f"{r['Out of']:g}",
-                     f"{r['Percentage']:.2f}", str(r["Grade"]), f"{r['Grade Point']:.2f}"])
-    table = Table(data, repeatRows=1, colWidths=[55*mm, 22*mm, 22*mm, 22*mm, 22*mm, 20*mm])
-    table.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#243B63")),
-        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-        ("GRID",(0,0),(-1,-1),0.4,colors.HexColor("#CBD5E1")),
-        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F1F5F9")]),
-        ("PADDING",(0,0),(-1,-1),7),
-    ]))
-    story += [table, Spacer(1, 14),
-              Paragraph(f"<b>Total:</b> {summary['total']:g}/{summary['maximum']:g} &nbsp;&nbsp; <b>Percentage:</b> {summary['percent']:.2f}%", styles["Normal"]),
-              Paragraph(f"<b>GPA:</b> {summary['gpa']:.2f}/5.00 &nbsp;&nbsp; <b>Status:</b> {summary['status']}", styles["Normal"]),
-              Spacer(1, 22),
-              Paragraph("Generated by EduNexus 2.0. Verify the grading policy with your institution.", styles["Italic"])]
-    doc.build(story)
-    buf.seek(0)
-    return buf.getvalue()
-
-# ---------------- UI Theme ----------------
-if "user" not in st.session_state:
-    st.session_state.user = None
-if "theme" not in st.session_state:
-    st.session_state.theme = "Light"
+if "user" not in st.session_state: st.session_state.user=None
+if "dark" not in st.session_state: st.session_state.dark=False
 
 with st.sidebar:
-    st.markdown("# 🎓 EduNexus")
-    st.caption("Smart Result Management • Version 2.0")
-    theme = st.radio("Appearance", ["Light", "Dark"], horizontal=True,
-                     index=0 if st.session_state.theme == "Light" else 1)
-    st.session_state.theme = theme
+    st.title("🎓 EduNexus")
+    st.caption("Version 3.0 • Fresh Build")
+    st.session_state.dark=st.toggle("Dark mode",st.session_state.dark)
+    if st.session_state.user:
+        st.write(f"**{st.session_state.user['username']}**")
+        st.write(st.session_state.user["role"])
+        if st.button("Logout"):
+            st.session_state.user=None
+            st.rerun()
 
-if st.session_state.theme == "Dark":
-    st.markdown("""<style>
-    .stApp {background:#0b1220;color:#e5e7eb}
-    [data-testid="stSidebar"] {background:#111827}
-    [data-testid="stMetric"] {background:#182338;border:1px solid #26364f;padding:14px;border-radius:14px}
-    div[data-testid="stDataFrame"] {border:1px solid #334155;border-radius:10px}
-    </style>""", unsafe_allow_html=True)
-else:
-    st.markdown("""<style>
-    .block-container{padding-top:1.5rem;padding-bottom:2rem}
-    [data-testid="stMetric"]{background:#f1f5f9;border:1px solid #e2e8f0;padding:14px;border-radius:14px}
-    div.stButton>button,div.stDownloadButton>button{border-radius:9px;font-weight:600}
-    </style>""", unsafe_allow_html=True)
+if st.session_state.dark:
+    st.markdown("<style>.stApp{background:#0b1220;color:#e5e7eb}[data-testid=stSidebar]{background:#111827}</style>",unsafe_allow_html=True)
 
-# ---------------- First admin setup ----------------
-if user_count() == 0:
-    st.title("🎓 EduNexus 2.0")
-    st.subheader("Create your first administrator account")
-    st.info("First launch only: create an Admin account. Keep the password private.")
+with db() as c: user_count=c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
+if user_count==0:
+    st.title("EduNexus 3.0")
+    st.subheader("Create first Admin account")
     with st.form("first_admin"):
-        username = st.text_input("Admin username")
-        password = st.text_input("Password", type="password")
-        confirm = st.text_input("Confirm password", type="password")
-        submit = st.form_submit_button("Create Admin", use_container_width=True)
-    if submit:
-        if not username.strip() or len(password) < 8:
-            st.error("Enter a username and a password with at least 8 characters.")
-        elif password != confirm:
-            st.error("Passwords do not match.")
+        u=st.text_input("Admin username")
+        p=st.text_input("Password (minimum 8 characters)",type="password")
+        p2=st.text_input("Confirm password",type="password")
+        go=st.form_submit_button("Create Admin")
+    if go:
+        if not u.strip() or len(p)<8: st.error("Username দিন এবং অন্তত ৮ অক্ষরের password দিন।")
+        elif p!=p2: st.error("Password মিলছে না।")
         else:
             try:
-                add_user(username, password, "Admin")
-                st.success("Admin account created. Log in now.")
+                with db() as c: add_user(c,u,p,"Admin")
+                st.success("Admin তৈরি হয়েছে। পেজ refresh করে login করুন।")
                 st.rerun()
-            except sqlite3.IntegrityError:
-                st.error("Username already exists.")
+            except sqlite3.IntegrityError: st.error("Username আগে থেকেই আছে।")
     st.stop()
 
-# ---------------- Login ----------------
 if st.session_state.user is None:
-    st.title("🎓 EduNexus 2.0")
-    st.subheader("Premium Academic Result Portal")
-    left, right = st.columns([1.15, .85], gap="large")
-    with left:
-        st.markdown("### Welcome back")
-        with st.form("login"):
-            username = st.text_input("Username")
-            password = st.text_input("Password", type="password")
-            submit = st.form_submit_button("Sign in", use_container_width=True)
-        if submit:
-            u = authenticate(username, password)
-            if u:
-                st.session_state.user = u
-                st.rerun()
-            st.error("Invalid username or password.")
-    with right:
-        st.markdown("### One portal. Three roles.")
-        st.markdown("🛡️ **Admin** — manage users, students and reports  \n🧑‍🏫 **Teacher** — enter marks and analyze results  \n🎓 **Student** — view personal marksheets")
-        st.caption("Version 2.0 prototype. Use fictional data until production security is configured.")
+    st.title("🎓 EduNexus 3.0")
+    st.subheader("Academic Result & Analytics Platform")
+    with st.form("login"):
+        u=st.text_input("Username")
+        p=st.text_input("Password",type="password")
+        go=st.form_submit_button("Login",use_container_width=True)
+    if go:
+        user=verify(u,p)
+        if user: st.session_state.user=user; st.rerun()
+        else: st.error("Username অথবা password ভুল।")
     st.stop()
 
-user = st.session_state.user
-with st.sidebar:
-    st.divider()
-    st.write(f"**Signed in:** {user['username']}")
-    st.write(f"**Role:** {user['role']}")
-    if st.button("Log out", use_container_width=True):
-        st.session_state.user = None
-        st.rerun()
+user=st.session_state.user
+students=load_students()
+marks=load_marks()
+st.title("EduNexus 3.0")
+st.caption("School • College • University")
 
-role = user["role"]
-st.title("EduNexus")
-st.caption("Premium Result Management & Academic Analytics")
-
-sdf = students_df()
-rdf = all_results_df()
-
-# ---------------- Student view ----------------
-if role == "Student":
-    student = get_student(user["username"])
-    st.subheader("My Results")
-    if not student:
-        st.warning("Your student profile is not linked. Contact your administrator.")
+if user["role"]=="Student":
+    with db() as c: student=c.execute("SELECT * FROM students WHERE username=?",(user["username"],)).fetchone()
+    if not student: st.warning("Student profile Admin-এর সঙ্গে link করা নেই।")
     else:
-        st.markdown(f"### {student['full_name']}")
-        st.caption(f"{student['institution_name']} • {student['institution_type']} • Roll {student['roll']}")
-        with db() as con:
-            exams = [x[0] for x in con.execute("SELECT DISTINCT exam_name FROM results WHERE student_id=? ORDER BY exam_name",
-                                               (student["id"],)).fetchall()]
-        if not exams:
-            st.info("No published results yet.")
-        else:
-            exam = st.selectbox("Choose examination", exams)
-            df = result_for(student["id"], exam)
-            summary = summarize_exam(df)
-            a,b,c,d = st.columns(4)
-            a.metric("Total Marks", f"{summary['total']:g}/{summary['maximum']:g}")
-            b.metric("Percentage", f"{summary['percent']:.2f}%")
-            c.metric("GPA", f"{summary['gpa']:.2f}/5.00")
-            d.metric("Result", summary["status"])
-            st.dataframe(summary["details"], use_container_width=True, hide_index=True)
-            st.download_button("⬇️ Download PDF Marksheet", make_marksheet_pdf(student, exam, summary),
-                               file_name=f"marksheet_{student['roll']}_{exam.replace(' ','_')}.pdf",
-                               mime="application/pdf", use_container_width=True)
-
-# ---------------- Admin / Teacher ----------------
+        st.subheader(student["name"])
+        with db() as c:
+            exams=[r[0] for r in c.execute("SELECT DISTINCT exam FROM marks WHERE student_id=?",(student["id"],))]
+        if exams:
+            exam=st.selectbox("Select exam",exams)
+            df=pd.read_sql_query("SELECT exam,subject,obtained,total FROM marks WHERE student_id=? AND exam=?",
+                                 db(),params=(student["id"],exam))
+            summary,details=analyze(df)
+            a,b,c,d=st.columns(4)
+            a.metric("Total",f"{summary['total']:g}/{summary['maximum']:g}")
+            b.metric("Percentage",f"{summary['percent']:.1f}%")
+            c.metric("GPA (demo)",f"{summary['gpa']:.2f}/5")
+            d.metric("Status",summary["status"])
+            st.dataframe(details,use_container_width=True,hide_index=True)
+        else: st.info("কোনো result পাওয়া যায়নি।")
 else:
-    # Summary cards
-    exam_count = rdf["exam_name"].nunique() if not rdf.empty else 0
-    c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Total Students", len(sdf))
-    c2.metric("Result Entries", len(rdf))
-    c3.metric("Examinations", exam_count)
-    c4.metric("Subjects", rdf["subject"].nunique() if not rdf.empty else 0)
+    a,b,c,d=st.columns(4)
+    a.metric("Students",len(students)); b.metric("Mark entries",len(marks))
+    c.metric("Exams",marks.exam.nunique() if not marks.empty else 0)
+    d.metric("Subjects",marks.subject.nunique() if not marks.empty else 0)
+    tabs=["Dashboard","Students","Marks Entry","AI Insights"]
+    if user["role"]=="Admin": tabs+=["User Management","Export"]
+    pages=st.tabs(tabs)
 
-    tabs_list = ["Overview", "Students", "Enter Results", "Advanced Search", "Merit List"]
-    if role == "Admin":
-        tabs_list += ["User Management", "Export"]
-    tabs = st.tabs(tabs_list)
-
-    with tabs[0]:
-        st.subheader("Academic Performance")
-        if rdf.empty:
-            st.info("Add students and enter marks to unlock analytics.")
+    with pages[0]:
+        if marks.empty: st.info("প্রথমে student ও marks যোগ করুন।")
         else:
-            l,r = st.columns(2)
-            with l:
-                st.markdown("**Average marks by subject**")
-                st.bar_chart(rdf.groupby("subject")["marks"].mean())
-            with r:
-                st.markdown("**Institution level distribution**")
-                st.bar_chart(rdf.groupby("institution_type").size())
-            st.markdown("**Recent result entries**")
-            st.dataframe(rdf[["full_name","roll","exam_name","subject","marks","max_marks"]].tail(15),
-                         use_container_width=True, hide_index=True)
+            chart=marks.assign(percent=marks.obtained/marks.total*100)
+            st.subheader("Average performance by subject")
+            st.bar_chart(chart.groupby("subject").percent.mean())
+            st.dataframe(marks[["name","roll","exam","subject","obtained","total"]].tail(12),
+                         use_container_width=True,hide_index=True)
 
-    with tabs[1]:
-        st.subheader("Student Directory")
-        if role == "Admin":
-            with st.expander("➕ Add student", expanded=False):
-                with st.form("add_student"):
-                    name = st.text_input("Full name")
-                    roll = st.text_input("Roll / Student ID")
-                    typ = st.selectbox("Institution type", ["School","College","University"])
-                    inst = st.text_input("Institution name")
-                    dept = st.text_input("Department / Group")
-                    cls = st.text_input("Class / Year / Semester")
-                    section = st.text_input("Section")
-                    year = st.text_input("Academic year", value=str(datetime.now().year))
-                    st.markdown("**Student login**")
-                    su = st.text_input("Student username")
-                    sp = st.text_input("Temporary password", type="password")
-                    save = st.form_submit_button("Save student", use_container_width=True)
+    with pages[1]:
+        if user["role"]=="Admin":
+            with st.expander("Add student"):
+                with st.form("student_add"):
+                    name=st.text_input("Full name"); roll=st.text_input("Roll")
+                    inst=st.text_input("Institution"); level=st.selectbox("Level",["School","College","University"])
+                    cls=st.text_input("Class / Year / Semester")
+                    year=st.text_input("Academic year",str(datetime.now().year))
+                    su=st.text_input("Student username"); sp=st.text_input("Temporary password (8+ chars)",type="password")
+                    save=st.form_submit_button("Save student")
                 if save:
                     if not all([name.strip(),roll.strip(),inst.strip(),year.strip(),su.strip()]) or len(sp)<8:
-                        st.error("Complete required fields; password must be at least 8 characters.")
+                        st.error("সব প্রয়োজনীয় তথ্য দিন; password কমপক্ষে ৮ অক্ষর।")
                     else:
                         try:
-                            with db() as con:
-                                con.execute("""INSERT INTO students(full_name,roll,institution_type,institution_name,
-                                    department,class_name,section,academic_year,username,created_at)
-                                    VALUES(?,?,?,?,?,?,?,?,?,?)""",
-                                    (name.strip(),roll.strip(),typ,inst.strip(),dept,cls,section,year,su.strip(),
-                                     datetime.now().isoformat(timespec="seconds")))
-                            add_user(su,sp,"Student")
-                            st.success("Student added.")
-                            st.rerun()
-                        except sqlite3.IntegrityError:
-                            st.error("Duplicate roll for institution/year or username.")
-        if not sdf.empty:
-            filters = st.text_input("Quick filter students by name, roll, class or institution")
-            view = sdf.copy()
-            if filters:
-                mask = False
-                for col in ["full_name","roll","class_name","institution_name","department"]:
-                    mask = mask | view[col].astype(str).str.contains(filters, case=False, na=False)
-                view = view[mask]
-            st.dataframe(view[["full_name","roll","institution_type","institution_name","department","class_name","section","academic_year"]],
-                         use_container_width=True, hide_index=True)
-        else:
-            st.info("No student records yet.")
+                            with db() as c:
+                                c.execute("BEGIN")
+                                c.execute("""INSERT INTO students(name,roll,institution,level,class_name,academic_year,username)
+                                VALUES(?,?,?,?,?,?,?)""",(name.strip(),roll.strip(),inst.strip(),level,cls,year,su.strip()))
+                                add_user(c,su,sp,"Student")
+                            st.success("Student account তৈরি হয়েছে।"); st.rerun()
+                        except sqlite3.IntegrityError: st.error("Roll অথবা username duplicate।")
+        q=st.text_input("Search student")
+        view=students.copy()
+        if q and not view.empty:
+            mask=False
+            for col in ["name","roll","institution","class_name"]:
+                mask=mask|view[col].astype(str).str.contains(q,case=False,na=False)
+            view=view[mask]
+        st.dataframe(view,use_container_width=True,hide_index=True)
 
-    with tabs[2]:
-        st.subheader("Enter / Update Subject Marks")
-        if sdf.empty:
-            st.warning("Add students first.")
+    with pages[2]:
+        if students.empty: st.info("আগে student যোগ করুন।")
         else:
-            opts = {f"{r.full_name} | Roll {r.roll} | {r.institution_name}": int(r.id) for r in sdf.itertuples()}
-            with st.form("marks_form"):
-                chosen = st.selectbox("Student", list(opts.keys()))
-                exam = st.text_input("Examination name", placeholder="Final Examination 2026")
-                subject = st.text_input("Subject")
-                x,y = st.columns(2)
-                marks = x.number_input("Obtained marks", min_value=0.0, value=0.0, step=1.0)
-                maximum = y.number_input("Maximum marks", min_value=1.0, value=100.0, step=1.0)
-                save = st.form_submit_button("Save marks", use_container_width=True)
+            opts={f"{r.name} | Roll {r.roll}":int(r.id) for r in students.itertuples()}
+            with st.form("mark_entry"):
+                chosen=st.selectbox("Student",list(opts.keys()))
+                exam=st.text_input("Exam name"); subject=st.text_input("Subject")
+                x,y=st.columns(2)
+                obtained=x.number_input("Obtained marks",min_value=0.0,value=0.0)
+                total=y.number_input("Total marks",min_value=1.0,value=100.0)
+                save=st.form_submit_button("Save / Update marks")
             if save:
-                if not exam.strip() or not subject.strip():
-                    st.error("Exam and subject are required.")
-                elif marks > maximum:
-                    st.error("Obtained marks cannot exceed maximum marks.")
+                if not exam.strip() or not subject.strip(): st.error("Exam ও subject লিখুন।")
+                elif obtained>total: st.error("Obtained marks total-এর বেশি হতে পারবে না।")
                 else:
-                    with db() as con:
-                        con.execute("""INSERT INTO results(student_id,exam_name,subject,marks,max_marks,entered_by,created_at)
-                            VALUES(?,?,?,?,?,?,?) ON CONFLICT(student_id,exam_name,subject)
-                            DO UPDATE SET marks=excluded.marks,max_marks=excluded.max_marks,
-                            entered_by=excluded.entered_by,created_at=excluded.created_at""",
-                            (opts[chosen],exam.strip(),subject.strip(),marks,maximum,user["username"],
-                             datetime.now().isoformat(timespec="seconds")))
-                    st.success("Marks saved/updated.")
-                    st.rerun()
+                    with db() as c:
+                        c.execute("""INSERT INTO marks(student_id,exam,subject,obtained,total,entered_by,created_at)
+                        VALUES(?,?,?,?,?,?,?) ON CONFLICT(student_id,exam,subject) DO UPDATE SET
+                        obtained=excluded.obtained,total=excluded.total,entered_by=excluded.entered_by,created_at=excluded.created_at""",
+                        (opts[chosen],exam.strip(),subject.strip(),obtained,total,user["username"],datetime.now().isoformat()))
+                    st.success("Marks saved."); st.rerun()
 
-    with tabs[3]:
-        st.subheader("Advanced Result Search")
-        if rdf.empty:
-            st.info("No results available.")
+    with pages[3]:
+        st.subheader("AI Insights — Free explainable analysis")
+        st.caption("এটি rule-based analysis; এখনো Machine Learning prediction নয়।")
+        if marks.empty: st.info("Insights-এর জন্য আগে result যোগ করুন।")
         else:
-            f1,f2,f3 = st.columns(3)
-            q = f1.text_input("Student name / Roll")
-            exam_values = ["All"] + sorted(rdf["exam_name"].dropna().unique().tolist())
-            exam_filter = f2.selectbox("Examination", exam_values)
-            level_values = ["All"] + sorted(rdf["institution_type"].dropna().unique().tolist())
-            level_filter = f3.selectbox("Institution level", level_values)
-            view = rdf.copy()
-            if q:
-                view = view[view["full_name"].str.contains(q,case=False,na=False) | view["roll"].astype(str).str.contains(q,case=False,na=False)]
-            if exam_filter != "All": view = view[view["exam_name"] == exam_filter]
-            if level_filter != "All": view = view[view["institution_type"] == level_filter]
-            st.caption(f"{len(view)} matching subject result entries")
-            st.dataframe(view[["full_name","roll","institution_type","class_name","exam_name","subject","marks","max_marks"]],
-                         use_container_width=True, hide_index=True)
+            exam=st.selectbox("Choose exam",sorted(marks.exam.unique()),key="insight_exam")
+            part=marks[marks.exam==exam].copy()
+            part["percent"]=part.obtained/part.total*100
+            avg=part.groupby("subject").percent.mean().sort_values()
+            if len(avg):
+                st.write(f"**সহায়তা প্রয়োজন হতে পারে:** {avg.index[0]} (গড় {avg.iloc[0]:.1f}%)")
+                st.write(f"**তুলনামূলক ভালো বিষয়:** {avg.index[-1]} (গড় {avg.iloc[-1]:.1f}%)")
+                weak=avg[avg<40]
+                st.write("**৪০%-এর নিচে গড়:** "+(", ".join(weak.index) if len(weak) else "কোনো বিষয় নেই"))
 
-    with tabs[4]:
-        st.subheader("Merit List & Ranking")
-        if rdf.empty:
-            st.info("Enter results to generate a merit list.")
-        else:
-            exam_list = sorted(rdf["exam_name"].dropna().unique().tolist())
-            exam_pick = st.selectbox("Select examination for ranking", exam_list, key="merit_exam")
-            eligible = rdf[rdf["exam_name"] == exam_pick]
-            ranked = []
-            for sid, group in eligible.groupby("student_id"):
-                summ = summarize_exam(group[["exam_name","subject","marks","max_marks"]])
-                first = group.iloc[0]
-                ranked.append({"Student":first["full_name"],"Roll":first["roll"],
-                               "Class / Year":first["class_name"],"Institution":first["institution_name"],
-                               "Total":f"{summ['total']:g}/{summ['maximum']:g}",
-                               "Percentage":round(summ["percent"],2),"GPA":summ["gpa"],"Status":summ["status"]})
-            rank_df = pd.DataFrame(ranked)
-            if not rank_df.empty:
-                rank_df = rank_df.sort_values(["Status","GPA","Percentage"],ascending=[True,False,False]).reset_index(drop=True)
-                rank_df.insert(0,"Rank",range(1,len(rank_df)+1))
-                st.dataframe(rank_df,use_container_width=True,hide_index=True)
-                st.download_button("⬇️ Download merit list CSV",rank_df.to_csv(index=False).encode("utf-8-sig"),
-                                   file_name=f"merit_list_{exam_pick.replace(' ','_')}.csv",mime="text/csv")
-
-    if role == "Admin":
-        with tabs[5]:
-            st.subheader("User Management")
-            with st.form("teacher_create"):
-                tu = st.text_input("Teacher username")
-                tp = st.text_input("Temporary password",type="password")
-                create = st.form_submit_button("Create Teacher")
+    if user["role"]=="Admin":
+        with pages[4]:
+            with st.form("teacher_add"):
+                tu=st.text_input("Teacher username"); tp=st.text_input("Temporary password (8+ chars)",type="password")
+                create=st.form_submit_button("Create Teacher")
             if create:
-                if not tu.strip() or len(tp)<8:
-                    st.error("Username required; password must be at least 8 characters.")
+                if not tu.strip() or len(tp)<8: st.error("Username এবং ৮+ অক্ষরের password দিন।")
                 else:
                     try:
-                        add_user(tu,tp,"Teacher")
-                        st.success("Teacher account created.")
-                        st.rerun()
-                    except sqlite3.IntegrityError:
-                        st.error("Username already exists.")
-            with db() as con:
-                users = pd.read_sql_query("SELECT username,role,created_at FROM users ORDER BY role,username",con)
+                        with db() as c: add_user(c,tu,tp,"Teacher")
+                        st.success("Teacher তৈরি হয়েছে।"); st.rerun()
+                    except sqlite3.IntegrityError: st.error("Username already exists.")
+            with db() as c: users=pd.read_sql_query("SELECT username,role,created_at FROM users",c)
             st.dataframe(users,use_container_width=True,hide_index=True)
-
-        with tabs[6]:
-            st.subheader("Export Reports")
-            if rdf.empty:
-                st.info("No results to export.")
+        with pages[5]:
+            if marks.empty: st.info("Export করার মতো data নেই।")
             else:
-                export = rdf[["full_name","roll","institution_type","institution_name","department",
-                              "class_name","academic_year","exam_name","subject","marks","max_marks"]]
-                st.download_button("⬇️ Export all results (CSV)",export.to_csv(index=False).encode("utf-8-sig"),
-                                   file_name="edunexus_v2_results.csv",mime="text/csv",use_container_width=True)
+                st.download_button("Download results CSV",marks.to_csv(index=False).encode("utf-8-sig"),
+                                   file_name="edunexus_v3_results.csv",mime="text/csv")
 
 st.divider()
-st.caption("EduNexus 2.0 • Prototype • Confirm official grading rules and security requirements before real institutional use.")
+st.caption("Prototype only. Demo grading scale; confirm official rules. Use fictional student data until security and persistent storage are configured.")
