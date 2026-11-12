@@ -1,38 +1,35 @@
-# EduNexus — Smart Result Management System
+# EduNexus 2.0
 
-A beginner-friendly Streamlit + SQLite prototype for School, College and University result management.
+Premium Streamlit + SQLite result dashboard, designed as a V1-compatible upgrade.
 
-## Run locally / in a Python environment
+## Features
+- Admin, Teacher and Student role-based views
+- Existing V1 SQLite schema compatibility
+- Student directory and quick filtering
+- Enter/update subject marks
+- Subject-wise grade and grade-point calculation
+- GPA summary (average subject grade points; any failed subject marks overall result as Fail)
+- Advanced result search
+- Merit list and ranking
+- PDF marksheet download
+- CSV export
+- Light/Dark appearance toggle
 
+## Android-friendly workflow
+1. Extract this ZIP.
+2. Upload `app.py` and `requirements.txt` to a GitHub repository.
+3. In Streamlit Community Cloud, create an app from that repository and select `app.py`.
+4. Install requirements during deployment automatically.
+5. Keep the V1 `edunexus.db` file backed up. For a persistent live deployment, migrate to a hosted database; do not rely on ephemeral local storage.
+
+## Run in a Python environment
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open the local URL shown by Streamlit.
+## V1 database compatibility
+The app uses the same `users`, `students`, and `results` tables as the supplied V1 starter. Keep a backup of the existing `edunexus.db` before upgrading. If deploying to a new host, the database file must be migrated securely.
 
-## First login
-
-On first launch, the app asks you to create the first Admin account. Choose a unique username and a password of at least 8 characters.
-
-## Roles
-
-- Admin: add student records and student accounts, create teacher accounts, view dashboard, search results and export CSV.
-- Teacher: view students, enter/update marks, search results.
-- Student: view only the result linked to their student account.
-
-## Important prototype notes
-
-- This is a learning prototype, not production-ready software.
-- The default grade scale is generic and must be changed to match the institution's official rules.
-- SQLite is suitable for a local prototype. For a real multi-user institution, use a hosted database, HTTPS, stronger account recovery, audit logs, backups, rate limiting, and a proper deployment setup.
-- Do not upload real student personal data or publish this app publicly until security and privacy controls have been reviewed.
-- Streamlit Community Cloud's local filesystem should not be treated as durable database storage. Use a persistent hosted database for production.
-
-## Suggested next steps
-
-1. Add institution-specific grading rules.
-2. Add class/department filters and exam management.
-3. Add PDF report cards.
-4. Add secure password reset and account administration.
-5. Deploy with a persistent database.
+## Important
+This is a prototype, not production-ready institutional software. The grading scale is a generic default and may not match every school, college, university, board, department or course. Configure official grading and credit-weighted GPA rules before use. Add HTTPS, persistent database hosting, audit logs, backups, access reviews, password reset and privacy controls before handling real student records.
