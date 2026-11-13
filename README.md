@@ -1,22 +1,29 @@
-# EduNexus V6.0
+# EduNexus V7.0 — Academic Management + Attendance
 
-## V6 additions
-- Admin-controlled result publishing: exams start as Draft.
-- Admin reviews entered marks and explicitly publishes results.
-- Student accounts see only published exam results.
-- Admin can unpublish results if a correction is needed.
-- Exam-wise merit list with rank, obtained marks, total marks and percentage.
-- V5 premium light theme and mobile-responsive CSS retained.
-- V5 database filename/schema retained; startup adds `is_published` column when missing.
+## V7.0 additions
+- Announcement card contrast fix: dark readable text on white card; explicit empty state.
+- Alert contrast fix: dark navy alert background with white readable text.
+- Daily Attendance module for Admin and Teacher: class-wise date-based Present / Absent / Late.
+- Attendance updates are unique per student per date (re-saving updates the same record).
+- Student portal includes My Attendance with attendance rate, present/absent/late counts.
+- Attendance CSV export for staff and individual student.
+- Dashboard includes today's attendance record count.
+- Preserves V6 controlled result publishing, result review/unpublish, exam-wise merit list,
+  V5 responsive styling, student/subject/exam management, roles, announcements and audit trail.
 
-## Update from V5 using Android
-1. Back up your existing database if you have a local copy. Do not overwrite or delete it.
-2. Upload/replace `app.py` and `requirements.txt` in your existing GitHub repository.
-3. Keep the `.streamlit/config.toml` file from V5, or replace it with the included one.
-4. Commit changes, then reboot the Streamlit app.
+## Update from V6 using Android
+1. Download and extract this ZIP.
+2. In the existing GitHub repository, replace `app.py` and `requirements.txt`.
+3. Keep/replace `.streamlit/config.toml` with the included file.
+4. Commit the changes and reboot the Streamlit app.
+5. Do not delete your existing database. This app retains the V6 database filename and adds
+   an attendance table automatically when it starts.
 
-## Important migration note
-The app keeps the V5 SQLite filename (`edunexus_v4.db`) for local compatibility. On startup, existing exam rows are marked Draft if the publication column is newly added. Admin must review and publish them. Free-hosting SQLite persistence is not guaranteed; verify the database and take backups before updating a live system.
+## Testing status
+Python syntax compilation passed. This is not a full Streamlit runtime or live-hosting test.
 
-## Limitations
-This remains a prototype, not a production student information system. The grade scale is generic/demo only. Merit list percentages are based on the marks currently entered; missing subject marks can affect rankings. Use fictional data during testing. Real student records require persistent managed storage, HTTPS, backups, secure account lifecycle, strict role authorization, institution isolation, privacy review and security testing.
+## Important
+Prototype only. The grade scale is generic/demo. SQLite persistence on free hosting is not guaranteed.
+Back up the database before updating. Do not use real student records until persistent managed
+storage, HTTPS, backups, strong account recovery, strict role permissions, institution isolation,
+privacy review and security testing are completed. Use fictional data during testing.

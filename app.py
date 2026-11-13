@@ -1,5 +1,5 @@
 import streamlit as st
-import sqlite3, hashlib, secrets, hmac, csv, io
+import sqlite3, hashlib, secrets, hmac, csv, io, html
 from datetime import datetime
 import pandas as pd
 
@@ -47,6 +47,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS audit (
           id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT, action TEXT,
           detail TEXT, created_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS attendance (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          student_id TEXT NOT NULL,
+          attendance_date TEXT NOT NULL,
+          status TEXT NOT NULL CHECK(status IN ('Present','Absent','Late')),
+          marked_by TEXT NOT NULL,
+          UNIQUE(student_id, attendance_date)
         );
         """)
         # V6 migration: existing V5 exams become unpublished until Admin reviews them.
@@ -136,7 +144,33 @@ div[data-testid="stDataFrame"] {
     overflow: hidden;
 }
 [data-testid="stAlert"] {
+    background: #1E293B !important;
+    border: 1px solid #334155 !important;
     border-radius: 12px !important;
+}
+[data-testid="stAlert"] * {
+    color: #FFFFFF !important;
+}
+.announcement-card {
+    background: #FFFFFF;
+    border: 1px solid #DCE5F0;
+    border-left: 5px solid #4263EB;
+    border-radius: 14px;
+    padding: 16px 18px;
+    margin: 10px 0;
+    box-shadow: 0 5px 16px rgba(23,43,77,.05);
+    color: #172B4D !important;
+}
+.announcement-card h4 {
+    color: #172B4D !important;
+    margin: 0 0 8px 0;
+}
+.announcement-card p {
+    color: #334155 !important;
+    margin: 0 0 8px 0;
+}
+.announcement-card small {
+    color: #64748B !important;
 }
 @media (max-width: 768px) {
     [data-testid="stMainBlockContainer"] {
@@ -172,8 +206,8 @@ div[data-testid="stDataFrame"] {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎓 EduNexus V6.0")
-st.caption("Academic Management + Controlled Result Publishing • School • College • University")
+st.title("🎓 EduNexus V7.0")
+st.caption("Smart Academic Suite • Results • Attendance • Analytics")
 
 if not get_setting("setup_complete"):
     st.subheader("প্রথম Admin অ্যাকাউন্ট তৈরি")
@@ -227,11 +261,11 @@ if st.sidebar.button("Logout"):
     st.rerun()
 
 if role == "Admin":
-    menu = st.sidebar.radio("Navigation", ["Overview","Students","Subjects","Exams & Marks","Result Publishing","Users","Announcements","Reports & Audit","Settings"])
+    menu = st.sidebar.radio("Navigation", ["Overview","Students","Subjects","Exams & Marks","Attendance","Result Publishing","Users","Announcements","Reports & Audit","Settings"])
 elif role == "Teacher":
-    menu = st.sidebar.radio("Navigation", ["Overview","Students","Exams & Marks","Announcements"])
+    menu = st.sidebar.radio("Navigation", ["Overview","Students","Exams & Marks","Attendance","Announcements"])
 else:
-    menu = st.sidebar.radio("Navigation", ["My Results","Announcements"])
+    menu = st.sidebar.radio("Navigation", ["My Results","My Attendance","Announcements"])
 
 def students_df():
     with db() as c:
@@ -262,8 +296,12 @@ if menu == "Overview":
     sdf, subdf, edf = students_df(), subjects_df(), exams_df()
     a,b,c,d = st.columns(4)
     a.metric("Students", len(sdf)); b.metric("Subjects", len(subdf)); c.metric("Exams", len(edf))
-    with db() as con: total_marks = con.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
+    with db() as con:
+        total_marks = con.execute("SELECT COUNT(*) FROM marks").fetchone()[0]
+        attendance_today = con.execute("SELECT COUNT(*) FROM attendance WHERE attendance_date=?",
+                                       (datetime.now().date().isoformat(),)).fetchone()[0]
     d.metric("Marks records", total_marks)
+    st.metric("Attendance records today", attendance_today)
     st.subheader("Recent announcements")
     with db() as con: news = pd.read_sql_query("SELECT title,body,created_at FROM announcements ORDER BY id DESC LIMIT 5", con)
     if news.empty: st.info("এখনো কোনো announcement নেই।")
@@ -373,6 +411,56 @@ elif menu == "Exams & Marks":
         exid=None if selected=="All" else int(edf.iloc[[i for i,r in enumerate(edf.itertuples()) if f"{r.exam_name} · {r.session}"==selected][0]].id)
         st.dataframe(result_data(exam_id=exid),use_container_width=True,hide_index=True)
 
+elif menu == "Attendance":
+    st.header("Daily Attendance")
+    st.caption("Admin ও Teacher শিক্ষার্থীদের দৈনিক উপস্থিতি সংরক্ষণ করতে পারবেন।")
+    sdf = students_df()
+    if sdf.empty:
+        st.info("Attendance নেওয়ার আগে Student যোগ করুন।")
+    else:
+        class_names = sorted(sdf["class_name"].dropna().unique().tolist())
+        chosen_class = st.selectbox("Class / Department", class_names)
+        class_students = sdf[sdf["class_name"] == chosen_class].copy()
+        attendance_day = st.date_input("Attendance date", value=datetime.now().date())
+        day_key = attendance_day.isoformat()
+        with db() as con:
+            existing = pd.read_sql_query(
+                "SELECT student_id,status FROM attendance WHERE attendance_date=?",
+                con, params=[day_key])
+        existing_map = dict(zip(existing["student_id"], existing["status"]))
+        st.write(f"**Students in this class: {len(class_students)}**")
+        with st.form("attendance_form"):
+            statuses = {}
+            for student in class_students.itertuples():
+                label = f"{student.name} · ID {student.id} · Roll {student.roll}"
+                statuses[student.id] = st.selectbox(
+                    label, ["Present","Absent","Late"],
+                    index=["Present","Absent","Late"].index(existing_map.get(student.id, "Present")),
+                    key=f"att_{day_key}_{student.id}")
+            save_attendance = st.form_submit_button("Save attendance", type="primary")
+        if save_attendance:
+            with db() as con:
+                for student_id, status in statuses.items():
+                    con.execute("""INSERT INTO attendance(student_id,attendance_date,status,marked_by)
+                    VALUES(?,?,?,?) ON CONFLICT(student_id,attendance_date)
+                    DO UPDATE SET status=excluded.status, marked_by=excluded.marked_by""",
+                    (student_id, day_key, status, user["username"]))
+            audit(user["username"], "SAVE_ATTENDANCE", f"{chosen_class}/{day_key}")
+            st.success("Attendance saved successfully.")
+            st.rerun()
+        with db() as con:
+            history = pd.read_sql_query(
+                """SELECT s.id,s.name,s.roll,a.attendance_date,a.status,a.marked_by
+                FROM attendance a JOIN students s ON s.id=a.student_id
+                WHERE s.class_name=? ORDER BY a.attendance_date DESC,s.roll""",
+                con, params=[chosen_class])
+        st.subheader("Attendance history")
+        st.dataframe(history, use_container_width=True, hide_index=True)
+        if not history.empty:
+            st.download_button("Download attendance CSV",
+                history.to_csv(index=False).encode("utf-8-sig"),
+                "edunexus_attendance.csv", "text/csv")
+
 elif menu == "Result Publishing":
     st.header("Result Review & Publishing")
     st.info("Teacher marks entry করার পর Admin ফলাফল যাচাই করে Publish করবেন। Publish না করা পর্যন্ত Student ফলাফল দেখতে পাবে না।")
@@ -449,6 +537,34 @@ elif menu == "My Results":
                 st.dataframe(df[["exam_name","subject_name","marks","full_marks","Grade"]],use_container_width=True,hide_index=True)
                 st.bar_chart(df.set_index("subject_name")["marks"])
 
+elif menu == "My Attendance":
+    st.header("My Attendance")
+    sid = user.get("student_id")
+    if not sid:
+        st.warning("এই account-এর সঙ্গে Student ID যুক্ত করা নেই। Admin-এর সঙ্গে যোগাযোগ করুন।")
+    else:
+        with db() as con:
+            att = pd.read_sql_query(
+                "SELECT attendance_date,status FROM attendance WHERE student_id=? ORDER BY attendance_date DESC",
+                con, params=[sid])
+        if att.empty:
+            st.info("এখনো attendance record পাওয়া যায়নি।")
+        else:
+            total = len(att)
+            present = int((att["status"] == "Present").sum())
+            late = int((att["status"] == "Late").sum())
+            absent = int((att["status"] == "Absent").sum())
+            rate = round((present + late) / total * 100, 1)
+            x1,x2,x3,x4 = st.columns(4)
+            x1.metric("Attendance", f"{rate}%")
+            x2.metric("Present", present)
+            x3.metric("Absent", absent)
+            x4.metric("Late", late)
+            st.dataframe(att, use_container_width=True, hide_index=True)
+            st.download_button("Download my attendance",
+                att.to_csv(index=False).encode("utf-8-sig"),
+                "my_attendance.csv", "text/csv")
+
 elif menu == "Announcements":
     st.header("Announcements")
     if role=="Admin":
@@ -461,9 +577,17 @@ elif menu == "Announcements":
                                           (title,body,datetime.now().isoformat(timespec="minutes")))
             audit(user["username"],"PUBLISH_ANNOUNCEMENT",title); st.success("Published.")
     with db() as con: posts=pd.read_sql_query("SELECT * FROM announcements ORDER BY id DESC",con)
+    if posts.empty:
+        st.info("এখনো কোনো announcement প্রকাশিত হয়নি।")
     for p in posts.to_dict("records"):
-        with st.container(border=True):
-            st.subheader(p["title"]); st.write(p["body"]); st.caption(p["created_at"])
+        safe_title = html.escape(str(p["title"]))
+        safe_body = html.escape(str(p["body"])).replace("\\n", "<br>")
+        safe_date = html.escape(str(p["created_at"]))
+        st.markdown(
+            f'<div class="announcement-card"><h4>{safe_title}</h4>'
+            f'<p>{safe_body}</p><small>{safe_date}</small></div>',
+            unsafe_allow_html=True
+        )
 
 elif menu == "Reports & Audit":
     st.header("Reports & Audit Trail")
@@ -497,5 +621,5 @@ elif menu == "Settings":
         st.success("Saved.")
     st.warning("এই সংস্করণে grading scale demo হিসেবে রাখা হয়েছে। বাস্তব প্রতিষ্ঠানের অনুমোদিত grading policy অনুযায়ী পরিবর্তন করতে হবে।")
     st.subheader("Backup reminder")
-    st.write("SQLite database file: `edunexus_v4.db` — নিয়মিত নিরাপদ backup রাখুন।")
+    st.write("SQLite database file: `edunexus_v4.db` — নিয়মিত নিরাপদ backup রাখুন। Attendance records-ও এই database-এ থাকে।")
     st.error("এটি prototype। বাস্তব শিক্ষার্থীর তথ্য ব্যবহারের আগে hosting persistence, HTTPS, backup, account recovery, role permissions, audit review এবং security testing সম্পন্ন করুন।")
