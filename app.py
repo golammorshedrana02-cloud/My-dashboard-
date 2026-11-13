@@ -87,16 +87,89 @@ def grade(mark, full):
 init_db()
 st.markdown("""
 <style>
-.stApp {background: linear-gradient(135deg,#eef4ff 0%,#f8fbff 55%,#edf7f5 100%);}
-[data-testid="stSidebar"] {background:#101d35;}
-[data-testid="stSidebar"] * {color:#f4f7ff !important;}
-h1,h2,h3 {color:#172b4d;}
-div[data-testid="stMetric"] {background:white;padding:16px;border-radius:14px;border:1px solid #e4eaf3;}
+:root {
+    color-scheme: light;
+}
+.stApp {
+    background: linear-gradient(135deg, #F4F7FC 0%, #F8FAFF 58%, #EEF7F5 100%) !important;
+    color: #172B4D !important;
+}
+[data-testid="stAppViewContainer"],
+[data-testid="stMain"],
+[data-testid="stMainBlockContainer"] {
+    background: transparent !important;
+}
+[data-testid="stSidebar"] {
+    background: #101D35 !important;
+}
+[data-testid="stSidebar"] * {
+    color: #F4F7FF !important;
+}
+h1, h2, h3, h4, p, label, .stMarkdown, .stText,
+[data-testid="stMetricLabel"],
+[data-testid="stMetricValue"],
+[data-testid="stMetricDelta"] {
+    color: #172B4D !important;
+}
+[data-testid="stMetric"] {
+    background: #FFFFFF !important;
+    color: #172B4D !important;
+    padding: 18px 20px !important;
+    border-radius: 16px !important;
+    border: 1px solid #E1E8F2 !important;
+    box-shadow: 0 5px 18px rgba(23, 43, 77, 0.05) !important;
+}
+[data-testid="stMetric"] * {
+    color: #172B4D !important;
+}
+.stButton > button, .stFormSubmitButton > button {
+    border-radius: 10px !important;
+    font-weight: 600 !important;
+}
+div[data-testid="stDataFrame"] {
+    border: 1px solid #E1E8F2;
+    border-radius: 12px;
+    overflow: hidden;
+}
+[data-testid="stAlert"] {
+    border-radius: 12px !important;
+}
+@media (max-width: 768px) {
+    [data-testid="stMainBlockContainer"] {
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+        padding-top: 1rem !important;
+    }
+    h1 {
+        font-size: 1.65rem !important;
+        line-height: 1.25 !important;
+    }
+    h2 {
+        font-size: 1.3rem !important;
+    }
+    [data-testid="stMetric"] {
+        padding: 12px !important;
+        min-height: 108px;
+    }
+    [data-testid="stMetricLabel"] {
+        font-size: 0.82rem !important;
+    }
+    [data-testid="stMetricValue"] {
+        font-size: 1.65rem !important;
+    }
+    .stButton > button, .stFormSubmitButton > button {
+        width: 100%;
+        min-height: 44px;
+    }
+    [data-testid="stDataFrame"] {
+        overflow-x: auto !important;
+    }
+}
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎓 EduNexus V4.0")
-st.caption("Smart Academic Management • School • College • University")
+st.title("🎓 EduNexus V5.0")
+st.caption("Premium Mobile-Responsive Academic Management • School • College • University")
 
 if not get_setting("setup_complete"):
     st.subheader("প্রথম Admin অ্যাকাউন্ট তৈরি")

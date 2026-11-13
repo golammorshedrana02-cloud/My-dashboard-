@@ -1,36 +1,25 @@
-# EduNexus V4.0 — Fresh Academic Management Prototype
+# EduNexus V5.0 — Premium Mobile-Responsive Academic Management
 
-## Features
-- Admin / Teacher / Student roles
-- First-run Admin setup and PBKDF2 password hashing
-- Student directory and CSV bulk import
-- Class-wise subject setup and exam sessions
-- Marks entry and update
-- Student result view
-- Announcements
-- Academic overview, CSV export and activity log
-- Rule-based grade labels (generic demo scale)
+## V5.0 updates
+- Fixed light/dark theme contrast by explicitly configuring Streamlit's light theme.
+- Reworked dashboard colors for readable dark text on pale backgrounds and white metric cards.
+- Added responsive spacing, typography, metric sizing, and full-width mobile buttons.
+- Preserves V4 features: Admin/Teacher/Student roles, student directory, CSV bulk import,
+  subjects, exams, marks entry, student results, announcements, analytics, CSV export, and audit log.
 
-## Run on Android
-1. Install/open a browser and visit https://github.com
-2. Create a repository named `edunexus-v4`.
-3. Upload `app.py` and `requirements.txt`.
-4. Visit https://share.streamlit.io and sign in with GitHub.
-5. Choose the repository, branch `main`, and main file `app.py`.
-6. Deploy. On first launch, create the Admin account.
+## Deploy / update using Android
+1. Open your existing GitHub repository for EduNexus.
+2. Upload/replace `app.py` and `requirements.txt`.
+3. Create a folder named `.streamlit` in the repository root.
+4. Inside it, add `config.toml` using the file included in this ZIP.
+5. Commit the changes.
+6. Open Streamlit Community Cloud and reboot/redeploy the app.
 
-For local Android experimentation, a Python environment such as Pydroid may work, but Streamlit deployment through GitHub + Streamlit Community Cloud is the simplest beginner route.
+If starting fresh, create a repository, upload all files including the hidden `.streamlit` folder,
+then deploy `app.py` from https://share.streamlit.io/.
 
-## Requirements
-- Python 3.10+
-- streamlit
-- pandas
-
-## Important limitations
-This is a learning/prototype build, not a production student information system.
-- The demo grading scale is not an official Bangladesh board or university scale.
-- SQLite file persistence on free hosting may not be guaranteed across rebuilds/restarts.
-- The starter has role-based navigation, but it is not a complete enterprise authorization/security system.
-- No ML prediction is claimed. Charts and reports are descriptive; grades are rule-based.
-- Before real student records: use persistent managed database storage, HTTPS, strong account lifecycle controls, institution isolation, least-privilege permissions, backups, audit review, privacy/legal review, and security testing.
-- Use fictional data while testing. Never commit the database or real student data to a public GitHub repository.
+## Important
+This is still a prototype. The grading scale is generic/demo, not an official board or university policy.
+SQLite persistence on free hosting may not survive all restarts/redeployments. Do not use real student
+records until persistent database storage, HTTPS, backup, account recovery, access-control review,
+privacy review, and security testing are in place. Use fictional data while testing.
