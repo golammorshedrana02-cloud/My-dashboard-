@@ -49,6 +49,10 @@ def init_db():
           detail TEXT, created_at TEXT NOT NULL
         );
         """)
+        # V6 migration: existing V5 exams become unpublished until Admin reviews them.
+        exam_columns = [row["name"] for row in c.execute("PRAGMA table_info(exams)").fetchall()]
+        if "is_published" not in exam_columns:
+            c.execute("ALTER TABLE exams ADD COLUMN is_published INTEGER NOT NULL DEFAULT 0")
 
 def hash_password(password, salt=None):
     salt = salt or secrets.token_hex(16)
@@ -168,8 +172,8 @@ div[data-testid="stDataFrame"] {
 </style>
 """, unsafe_allow_html=True)
 
-st.title("🎓 EduNexus V5.0")
-st.caption("Premium Mobile-Responsive Academic Management • School • College • University")
+st.title("🎓 EduNexus V6.0")
+st.caption("Academic Management + Controlled Result Publishing • School • College • University")
 
 if not get_setting("setup_complete"):
     st.subheader("প্রথম Admin অ্যাকাউন্ট তৈরি")
@@ -223,7 +227,7 @@ if st.sidebar.button("Logout"):
     st.rerun()
 
 if role == "Admin":
-    menu = st.sidebar.radio("Navigation", ["Overview","Students","Subjects","Exams & Marks","Users","Announcements","Reports & Audit","Settings"])
+    menu = st.sidebar.radio("Navigation", ["Overview","Students","Subjects","Exams & Marks","Result Publishing","Users","Announcements","Reports & Audit","Settings"])
 elif role == "Teacher":
     menu = st.sidebar.radio("Navigation", ["Overview","Students","Exams & Marks","Announcements"])
 else:
@@ -241,14 +245,15 @@ def subjects_df():
     with db() as c:
         return pd.read_sql_query("SELECT * FROM subjects ORDER BY class_name, subject_name", c)
 
-def result_data(student_id=None, exam_id=None):
+def result_data(student_id=None, exam_id=None, published_only=False):
     q = """SELECT s.id,s.name,s.class_name,s.section,s.roll,e.exam_name,
-                  sub.subject_name,sub.full_marks,m.marks
+                  e.is_published, sub.subject_name,sub.full_marks,m.marks
            FROM marks m JOIN students s ON s.id=m.student_id
            JOIN exams e ON e.id=m.exam_id JOIN subjects sub ON sub.id=m.subject_id WHERE 1=1"""
     args=[]
     if student_id: q += " AND s.id=?"; args.append(student_id)
     if exam_id: q += " AND e.id=?"; args.append(int(exam_id))
+    if published_only: q += " AND e.is_published=1"
     with db() as c:
         return pd.read_sql_query(q, c, params=args)
 
@@ -368,6 +373,44 @@ elif menu == "Exams & Marks":
         exid=None if selected=="All" else int(edf.iloc[[i for i,r in enumerate(edf.itertuples()) if f"{r.exam_name} · {r.session}"==selected][0]].id)
         st.dataframe(result_data(exam_id=exid),use_container_width=True,hide_index=True)
 
+elif menu == "Result Publishing":
+    st.header("Result Review & Publishing")
+    st.info("Teacher marks entry করার পর Admin ফলাফল যাচাই করে Publish করবেন। Publish না করা পর্যন্ত Student ফলাফল দেখতে পাবে না।")
+    edf = exams_df()
+    if edf.empty:
+        st.info("প্রথমে একটি Exam তৈরি করুন।")
+    else:
+        labels = {f"{r.exam_name} · {r.session} · {'Published' if int(r.is_published) else 'Draft'}": int(r.id)
+                  for r in edf.itertuples()}
+        selected = st.selectbox("Select exam to review", list(labels))
+        exam_id = labels[selected]
+        df = result_data(exam_id=exam_id)
+        if df.empty:
+            st.warning("এই পরীক্ষার জন্য এখনো কোনো marks entry নেই।")
+        else:
+            df["percentage"] = (df["marks"] / df["full_marks"] * 100).round(1)
+            st.metric("Marks entries", len(df))
+            st.dataframe(df[["id","name","class_name","roll","subject_name","marks","full_marks","percentage"]],
+                         use_container_width=True, hide_index=True)
+            current = int(edf.loc[edf["id"] == exam_id, "is_published"].iloc[0])
+            if current:
+                st.success("এই পরীক্ষার ফলাফল Published।")
+                if st.button("Unpublish results", type="secondary"):
+                    with db() as con:
+                        con.execute("UPDATE exams SET is_published=0 WHERE id=?", (exam_id,))
+                    audit(user["username"], "UNPUBLISH_RESULTS", str(exam_id))
+                    st.success("ফলাফল আবার Draft করা হয়েছে।")
+                    st.rerun()
+            else:
+                st.warning("এখনো Draft অবস্থায় আছে। যাচাই শেষে Publish করুন।")
+                confirm_publish = st.checkbox("আমি marks যাচাই করেছি এবং প্রকাশের অনুমোদন দিচ্ছি।")
+                if st.button("Publish results", type="primary", disabled=not confirm_publish):
+                    with db() as con:
+                        con.execute("UPDATE exams SET is_published=1 WHERE id=?", (exam_id,))
+                    audit(user["username"], "PUBLISH_RESULTS", str(exam_id))
+                    st.success("ফলাফল প্রকাশিত হয়েছে।")
+                    st.rerun()
+
 elif menu == "Users":
     st.header("User Accounts")
     with st.form("new_user"):
@@ -399,7 +442,7 @@ elif menu == "My Results":
         else:
             st.subheader(student["name"])
             st.caption(f"ID: {sid} · Class: {student['class_name']} · Roll: {student['roll']}")
-            df=result_data(student_id=sid)
+            df=result_data(student_id=sid, published_only=True)
             if df.empty: st.info("এখনো কোনো result প্রকাশিত হয়নি।")
             else:
                 df["Grade"]=df.apply(lambda r: grade(r["marks"],r["full_marks"])[0],axis=1)
@@ -431,6 +474,17 @@ elif menu == "Reports & Audit":
         st.bar_chart(df.groupby("subject_name")["percentage"].mean())
         st.download_button("Download results CSV",df.to_csv(index=False).encode("utf-8-sig"),
                            "edunexus_results.csv","text/csv")
+        st.subheader("Exam-wise Merit List")
+        merit_exam_names = sorted(df["exam_name"].dropna().unique().tolist())
+        if merit_exam_names:
+            chosen_exam = st.selectbox("Choose exam for merit list", merit_exam_names)
+            part = df[df["exam_name"] == chosen_exam].copy()
+            summary = part.groupby(["id","name","class_name","roll"], as_index=False).agg(
+                obtained=("marks","sum"), total=("full_marks","sum"))
+            summary["percentage"] = (summary["obtained"] / summary["total"] * 100).round(2)
+            summary = summary.sort_values(["percentage","obtained"], ascending=False)
+            summary.insert(0, "Rank", range(1, len(summary)+1))
+            st.dataframe(summary, use_container_width=True, hide_index=True)
     with db() as con: logs=pd.read_sql_query("SELECT * FROM audit ORDER BY id DESC LIMIT 300",con)
     st.subheader("Recent activity")
     st.dataframe(logs,use_container_width=True,hide_index=True)
